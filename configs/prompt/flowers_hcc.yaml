@@ -1,0 +1,47 @@
+# configs/prompt/flowers_hcc.yaml
+_BASE_: configs/base-prompt.yaml
+
+MODEL:
+  META_ARCH: "vit_adapter"    # uses src/models/vit_adapter/*
+  TYPE: "vit"
+  TRANSFER_TYPE: "prompt"
+  ADAPTER:
+    NAME: "HCC"               # build_adapter() lower-cases it; OK
+    HCC:
+      M: 1
+      H: 1
+      AXIS: "h"               # "h" | "w" | "hw"
+      PER_CHANNEL: True
+      TIE_SYM: True
+      USE_PW: False
+      PW_RATIO: 8
+      USE_BN: True
+      RESIDUAL_SCALE: 1.0
+      GATE_INIT: 0.1
+      PADDING: "reflect"
+
+DATA:
+  NAME: "OxfordFlowers"
+  DATAPATH: "/path/to/oxford-flowers102"
+  NUMBER_CLASSES: 102
+  FEATURE: "sup_vitb16_224"
+  BATCH_SIZE: 64
+  MULTILABEL: False
+
+SOLVER:
+  FINETUNE:
+    FREEZE_BACKBONE: true     # freeze ViT backbone; train prompts/adapter
+  TOTAL_EPOCH: 100
+  BASE_LR: 0.001
+  WEIGHT_DECAY: 0.0001
+  SCHEDULER: "cosine"
+  WARMUP_EPOCH: 10
+  OPTIMIZER: "sgd"
+  MOMENTUM: 0.9
+  PATIENCE: 300
+  LOSS: "softmax"
+
+NUM_GPUS: 1
+NUM_SHARDS: 1
+RUN_N_TIMES: 1
+OUTPUT_DIR: "outputs/hcc_flowers"

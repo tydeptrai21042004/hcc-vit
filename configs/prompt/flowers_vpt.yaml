@@ -1,0 +1,31 @@
+# configs/prompt/flowers_vpt.yaml
+_BASE_: configs/base-prompt.yaml
+
+MODEL:
+  META_ARCH: "vit_prompt"     # use the repo's prompt-tuning meta-arch
+  TYPE: "vit"
+  TRANSFER_TYPE: "prompt"
+
+DATA:
+  NAME: "OxfordFlowers"       # if your repo’s example uses "flowers", keep that
+  DATAPATH: "/path/to/oxford-flowers102"
+  NUMBER_CLASSES: 102
+  FEATURE: "sup_vitb16_224"
+  BATCH_SIZE: 64
+  MULTILABEL: False
+
+SOLVER:
+  TOTAL_EPOCH: 100
+  BASE_LR: 0.001
+  WEIGHT_DECAY: 0.0001
+  SCHEDULER: "cosine"
+  WARMUP_EPOCH: 10
+  OPTIMIZER: "sgd"
+  MOMENTUM: 0.9
+  PATIENCE: 300
+  LOSS: "softmax"
+
+NUM_GPUS: 1
+NUM_SHARDS: 1
+RUN_N_TIMES: 1
+OUTPUT_DIR: "outputs/vpt_flowers"
