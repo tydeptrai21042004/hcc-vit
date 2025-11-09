@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""JSON dataset: support CUB, NABrids, Flower, Dogs and Cars"""
+"""JSON dataset: support CUB, NABirds, Flowers, Dogs and Cars"""
 
 import os
 import torch
@@ -12,6 +12,7 @@ from collections import Counter
 from ..transforms import get_transforms
 from ...utils import logging
 from ...utils.io_utils import read_json
+
 logger = logging.get_logger("visual_prompt")
 
 
@@ -22,9 +23,9 @@ class JSONDataset(torch.utils.data.Dataset):
             "val",
             "test",
         }, "Split '{}' not supported for {} dataset".format(
-            split, cfg.DATA.NAME)
-        logger.info("Constructing {} dataset {}...".format(
-            cfg.DATA.NAME, split))
+            split, cfg.DATA.NAME
+        )
+        logger.info("Constructing {} dataset {}...".format(cfg.DATA.NAME, split))
 
         self.cfg = cfg
         self._split = split
@@ -40,7 +41,7 @@ class JSONDataset(torch.utils.data.Dataset):
             if self.data_percentage < 1.0:
                 anno_path = os.path.join(
                     self.data_dir,
-                    "{}_{}.json".format(self._split, self.data_percentage)
+                    "{}_{}.json".format(self._split, self.data_percentage),
                 )
         assert os.path.exists(anno_path), "{} dir not found".format(anno_path)
 
@@ -56,6 +57,48 @@ class JSONDataset(torch.utils.data.Dataset):
         assert os.path.exists(img_dir), "{} dir not found".format(img_dir)
 
         anno = self.get_anno()
+
+        # ------------------------------------------------------------------
+        # NEW: handle both dict and list-style annotations
+        # ------------------------------------------------------------------
+        if isinstance(anno, list):
+            logger.info(
+                "Annotation is a list; converting to {img_name: class_id} mapping."
+            )
+            converted = {}
+            for entry in anno:
+                # Case 1: dict-style entries
+                if isinstance(entry, dict):
+                    if "im_path" in entry and "class" in entry:
+                        img_name = os.path.basename(entry["im_path"])
+                        cls_id = entry["class"]
+                    elif "file_name" in entry and "label" in entry:
+                        img_name = entry["file_name"]
+                        cls_id = entry["label"]
+                    else:
+                        raise ValueError(
+                            f"Unsupported annotation entry format (dict): {entry}"
+                        )
+
+                # Case 2: list/tuple like ["image_00001.jpg", 0]
+                elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+                    img_name, cls_id = entry
+                else:
+                    raise ValueError(
+                        f"Unsupported annotation entry type: {type(entry)}, value: {entry}"
+                    )
+
+                img_name = os.path.basename(str(img_name))
+                converted[img_name] = int(cls_id)
+
+            anno = converted
+
+        # At this point, anno must be a dict: {img_name: class_id}
+        if not isinstance(anno, dict):
+            raise TypeError(
+                f"Annotation must be dict-like after conversion, got {type(anno)}"
+            )
+
         # Map class ids to contiguous ids
         self._class_ids = sorted(list(set(anno.values())))
         self._class_id_cont_id = {v: i for i, v in enumerate(self._class_ids)}
@@ -76,14 +119,14 @@ class JSONDataset(torch.utils.data.Dataset):
 
     def get_class_num(self):
         return self.cfg.DATA.NUMBER_CLASSES
-        # return len(self._class_ids)
+        # or: return len(self._class_ids)
 
     def get_class_weights(self, weight_type):
         """get a list of class weight, return a list float"""
         if "train" not in self._split:
             raise ValueError(
-                "only getting training class distribution, " + \
-                "got split {} instead".format(self._split)
+                "only getting training class distribution, "
+                + "got split {} instead".format(self._split)
             )
 
         cls_num = self.get_class_num()
@@ -94,13 +137,17 @@ class JSONDataset(torch.utils.data.Dataset):
         assert len(id2counts) == cls_num
         num_per_cls = np.array([id2counts[i] for i in self._class_ids])
 
-        if weight_type == 'inv':
+        if weight_type == "inv":
             mu = -1.0
-        elif weight_type == 'inv_sqrt':
+        elif weight_type == "inv_sqrt":
             mu = -0.5
+        else:
+            raise ValueError(f"Unknown weight_type: {weight_type}")
+
         weight_list = num_per_cls ** mu
         weight_list = np.divide(
-            weight_list, np.linalg.norm(weight_list, 1)) * cls_num
+            weight_list, np.linalg.norm(weight_list, 1)
+        ) * cls_num
         return weight_list.tolist()
 
     def __getitem__(self, index):
@@ -109,13 +156,13 @@ class JSONDataset(torch.utils.data.Dataset):
         label = self._imdb[index]["class"]
         im = self.transform(im)
         if self._split == "train":
-            index = index
+            out_index = index
         else:
-            index = f"{self._split}{index}"
+            out_index = f"{self._split}{index}"
         sample = {
             "image": im,
             "label": label,
-            # "id": index
+            # "id": out_index,  # keep simple
         }
         return sample
 
@@ -160,6 +207,7 @@ class FlowersDataset(JSONDataset):
         super(FlowersDataset, self).__init__(cfg, split)
 
     def get_imagedir(self):
+        # images are directly under DATAPATH
         return self.data_dir
 
 
@@ -171,4 +219,3 @@ class NabirdsDataset(JSONDataset):
 
     def get_imagedir(self):
         return os.path.join(self.data_dir, "images")
-
