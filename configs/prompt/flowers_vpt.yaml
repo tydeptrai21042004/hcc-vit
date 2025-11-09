@@ -1,5 +1,5 @@
 # configs/prompt/flowers_vpt.yaml
-_BASE_: configs/base-prompt.yaml
+_BASE_: ../base-prompt.yaml  
 
 MODEL:
   META_ARCH: "vit_prompt"     # use the repo's prompt-tuning meta-arch
