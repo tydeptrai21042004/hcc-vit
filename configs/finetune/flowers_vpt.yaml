@@ -2,17 +2,21 @@ _BASE_: ../base-prompt.yaml
 
 DATA:
   NAME: "OxfordFlowers"
-  DATAPATH: "/content/data/oxford-flowers102"   # <-- change if your path is different
+  DATAPATH: "/content/data/oxford-flowers102"   # same dataset as HCC
   NUMBER_CLASSES: 102
   MULTILABEL: False
 
 MODEL:
   TYPE: "vit"
-  TRANSFER_TYPE: "prompt"   # use VPT / visual prompts
+  TRANSFER_TYPE: "prompt"      # use VPT / visual prompt path
 
 SOLVER:
   TOTAL_EPOCH: 10
   BASE_LR: 5.0e-3
   WEIGHT_DECAY: 0.0001
+  OPTIMIZER: "adamw"
+  SCHEDULER: "cosine"
+  WARMUP_EPOCH: 5
+  LOG_EVERY_N: 10
 
 RUN_N_TIMES: 1

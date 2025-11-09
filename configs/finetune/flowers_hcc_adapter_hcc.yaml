@@ -2,26 +2,26 @@ _BASE_: ../base-finetune.yaml
 
 DATA:
   NAME: "OxfordFlowers"
-  DATAPATH: "/content/data/oxford-flowers102"   # same path as above
+  DATAPATH: "/content/data/oxford-flowers102"   # change if your path is different
   NUMBER_CLASSES: 102
   MULTILABEL: False
 
 MODEL:
   TYPE: "vit"
-  TRANSFER_TYPE: "adapter"   # use ADPT_VisionTransformer / adapter path
+  TRANSFER_TYPE: "adapter"    # use ADPT_VisionTransformer / adapter path
   ADAPTER:
     STYLE: "Pfeiffer"
-    REDUCATION_FACTOR: 16    # bottleneck size: dim // 16, matches your ADPT_Block
+    REDUCATION_FACTOR: 16     # dim // 16, matches your ADPT_Block
 
-    # ---- HCC-specific knobs (must match your added config fields) ----
+    # ---- HCC-specific knobs (must match config.py & HCCTokenAdapter) ----
     NAME: "HCC"
     HCC:
       M: 1
       H: 1
-      AXIS: "h"              # "h" | "w" | "hw"
+      AXIS: "h"               # "h" | "w" | "hw"
       PER_CHANNEL: True
       TIE_SYM: True
-      USE_PW: False          # ultra-light HCC, no 1x1 PW mixing
+      USE_PW: False           # ultra-light HCC, no 1x1 PW mixing
       PW_RATIO: 8
       USE_BN: True
       RESIDUAL_SCALE: 1.0
@@ -30,7 +30,11 @@ MODEL:
 
 SOLVER:
   TOTAL_EPOCH: 10
-  BASE_LR: 5.0e-3            # usually a bit higher for adapters
+  BASE_LR: 5.0e-3             # slightly higher is common for adapters
   WEIGHT_DECAY: 0.0001
+  OPTIMIZER: "adamw"
+  SCHEDULER: "cosine"
+  WARMUP_EPOCH: 5
+  LOG_EVERY_N: 10
 
 RUN_N_TIMES: 1

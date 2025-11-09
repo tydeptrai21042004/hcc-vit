@@ -24,4 +24,3 @@ DATA:
   FEATURE: "sup_vitb16_224"
   BATCH_SIZE: 384
   NUM_WORKERS: 8
-  //
