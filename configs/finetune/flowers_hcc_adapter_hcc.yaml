@@ -2,7 +2,7 @@ _BASE_: ../base-finetune.yaml
 
 DATA:
   NAME: "OxfordFlowers"
-  DATAPATH: "/content/data/oxford-flowers102"   # change if your path is different
+  DATAPATH: "/content/data/flowers-102"   # change if your path is different
   NUMBER_CLASSES: 102
   MULTILABEL: False
 

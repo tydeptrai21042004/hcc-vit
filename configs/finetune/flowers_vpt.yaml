@@ -2,7 +2,7 @@ _BASE_: ../base-prompt.yaml
 
 DATA:
   NAME: "OxfordFlowers"
-  DATAPATH: "/content/data/oxford-flowers102"   # same dataset as HCC
+  DATAPATH: "/content/data/flowers-102"   # same dataset as HCC
   NUMBER_CLASSES: 102
   MULTILABEL: False
 
