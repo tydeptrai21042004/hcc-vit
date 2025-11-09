@@ -32,38 +32,21 @@ def setup(args):
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
 
-    # ----------------- setup dist (robust for Colab / non-SLURM) -----------------
-    # If SLURMD_NODENAME is not defined (no SLURM), fall back to localhost.
-    node = os.environ.get("SLURMD_NODENAME", "127.0.0.1")
-    cfg.DIST_INIT_PATH = f"tcp://{node}:12399"
-    # -----------------------------------------------------------------------------    
+    # Simple single-node init for Colab
+    cfg.DIST_INIT_PATH = "env://"
 
-    # setup output dir
-    # output_dir / data_name / feature_name / lr_wd / run1
+    # Setup output dir: OUTPUT_DIR / DATA.NAME / FEATURE / lr_wd / run1
     output_dir = cfg.OUTPUT_DIR
     lr = cfg.SOLVER.BASE_LR
     wd = cfg.SOLVER.WEIGHT_DECAY
     output_folder = os.path.join(
         cfg.DATA.NAME, cfg.DATA.FEATURE, f"lr{lr}_wd{wd}"
     )
+    output_path = os.path.join(output_dir, output_folder, "run1")
 
-    # train cfg.RUN_N_TIMES times
-    count = 1
-    while count <= cfg.RUN_N_TIMES:
-        output_path = os.path.join(output_dir, output_folder, f"run{count}")
-        # pause for a random time, so concurrent process with same setting won't interfere
-        sleep(randint(3, 30))
-        if not PathManager.exists(output_path):
-            PathManager.mkdirs(output_path)
-            cfg.OUTPUT_DIR = output_path
-            break
-        else:
-            count += 1
-
-    if count > cfg.RUN_N_TIMES:
-        raise ValueError(
-            f"Already run {cfg.RUN_N_TIMES} times for {output_folder}, no need to run more"
-        )
+    # Make dirs (no multi-run logic, just reuse run1)
+    PathManager.mkdirs(output_path)
+    cfg.OUTPUT_DIR = output_path
 
     cfg.freeze()
     return cfg
