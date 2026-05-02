@@ -17,15 +17,20 @@ logger = logging.get_logger("visual_prompt")
 
 # NEW: bring in your token-space wrapper around HCC
 from .hcc_adapter import HCCTokenAdapter
+from .lora import apply_lora_to_attention
+from .peft_modules import AdaptFormerAdapter, SSF
 
 
 class ADPT_Block(nn.Module):
     """
-    One transformer block with an optional adapter.
+    Transformer block with transformer-only PEFT baselines.
 
-    Supported:
-      - adapter_config.NAME == "Pfeiffer": classic down->act->up MLP adapter
-      - adapter_config.NAME == "HCC":     token-space HCC applied to patch tokens
+    Supported adapter_config.NAME values:
+      - Pfeiffer: bottleneck MLP adapter
+      - HCC:      corrected DT1D/HCC token adapter on patch grid
+      - LoRA:     low-rank adaptation on attention projections
+      - AdaptFormer: ViT adapter baseline inserted after MLP branch
+      - SSF:      scale-and-shift feature modulation baseline
     """
     def __init__(self, config, vis, adapter_config, grid_size=None):
         super().__init__()
@@ -36,70 +41,109 @@ class ADPT_Block(nn.Module):
         self.attn = Attention(config, vis)
 
         self.adapter_config = adapter_config
-        self.token_adapter = None  # only used when NAME == "HCC"
+        self.token_adapter = None
+        self.adaptformer_adapter = None
+        self.ssf_attn = None
+        self.ssf_ffn = None
+        self.ssf_block = None
 
         name = str(getattr(adapter_config, "NAME", "")).lower()
 
         if name == "pfeiffer":
             red = int(adapter_config.REDUCATION_FACTOR)
             self.adapter_downsample = nn.Linear(self.hidden_size, self.hidden_size // red)
-            self.adapter_upsample   = nn.Linear(self.hidden_size // red, self.hidden_size)
-            self.adapter_act_fn     = ACT2FN["gelu"]
-
-            # init to near-identity
+            self.adapter_upsample = nn.Linear(self.hidden_size // red, self.hidden_size)
+            self.adapter_act_fn = ACT2FN["gelu"]
             nn.init.zeros_(self.adapter_downsample.weight)
             nn.init.zeros_(self.adapter_downsample.bias)
             nn.init.zeros_(self.adapter_upsample.weight)
             nn.init.zeros_(self.adapter_upsample.bias)
 
         elif name == "hcc":
-            assert grid_size is not None, "grid_size (H, W) is required for HCC token adapter"
+            if grid_size is None:
+                raise ValueError("grid_size (H, W) is required for HCC token adapter")
             H, W = int(grid_size[0]), int(grid_size[1])
-            # map ViT tokens <-> (B, D, H, W) and reuse your exact HCC math
+            hcc_cfg = adapter_config.HCC
             self.token_adapter = HCCTokenAdapter(
                 embed_dim=self.hidden_size,
                 grid_size=(H, W),
-                M=getattr(adapter_config.HCC, "M", 1),
-                h=getattr(adapter_config.HCC, "H", 1),
-                axis=getattr(adapter_config.HCC, "AXIS", "hw"),
-                per_channel=getattr(adapter_config.HCC, "PER_CHANNEL", True),
-                tie_sym=getattr(adapter_config.HCC, "TIE_SYM", True),
-                use_pw=getattr(adapter_config.HCC, "USE_PW", False),
-                pw_ratio=getattr(adapter_config.HCC, "PW_RATIO", 8),
-                use_bn=getattr(adapter_config.HCC, "USE_BN", True),
-                residual_scale=getattr(adapter_config.HCC, "RESIDUAL_SCALE", 1.0),
-                gate_init=getattr(adapter_config.HCC, "GATE_INIT", 0.1),
-                padding_mode=getattr(adapter_config.HCC, "PADDING", "reflect"),
+                M=getattr(hcc_cfg, "M", 1),
+                h=getattr(hcc_cfg, "H", 1),
+                axis=getattr(hcc_cfg, "AXIS", "hw"),
+                alpha_group=getattr(hcc_cfg, "ALPHA_GROUP", 16),
+                per_channel=getattr(hcc_cfg, "PER_CHANNEL", None),
+                tie_sym=getattr(hcc_cfg, "TIE_SYM", True),
+                no_pw=getattr(hcc_cfg, "NO_PW", True),
+                use_pw=getattr(hcc_cfg, "USE_PW", None),
+                pw_ratio=getattr(hcc_cfg, "PW_RATIO", 32),
+                pw_groups=getattr(hcc_cfg, "PW_GROUPS", 4),
+                use_bn=getattr(hcc_cfg, "USE_BN", False),
+                residual_scale=getattr(hcc_cfg, "RESIDUAL_SCALE", 1.0),
+                gate_init=getattr(hcc_cfg, "GATE_INIT", 0.0),
+                padding_mode=getattr(hcc_cfg, "PADDING", "reflect"),
             )
+
+        elif name == "lora":
+            lora_cfg = adapter_config.LORA
+            apply_lora_to_attention(
+                self.attn,
+                rank=getattr(lora_cfg, "RANK", 8),
+                alpha=getattr(lora_cfg, "ALPHA", 16.0),
+                dropout=getattr(lora_cfg, "DROPOUT", 0.0),
+                targets=getattr(lora_cfg, "TARGETS", "query,value"),
+            )
+
+        elif name == "adaptformer":
+            af_cfg = adapter_config.ADAPT_FORMER
+            self.adaptformer_adapter = AdaptFormerAdapter(
+                hidden_size=self.hidden_size,
+                reduction_factor=getattr(af_cfg, "REDUCTION_FACTOR", 16),
+                scale=getattr(af_cfg, "SCALE", 1.0),
+                dropout=getattr(af_cfg, "DROPOUT", 0.0),
+            )
+
+        elif name == "ssf":
+            ssf_cfg = adapter_config.SSF
+            init_scale = getattr(ssf_cfg, "INIT_SCALE", 1.0)
+            init_shift = getattr(ssf_cfg, "INIT_SHIFT", 0.0)
+            self.ssf_attn = SSF(self.hidden_size, init_scale=init_scale, init_shift=init_shift)
+            self.ssf_ffn = SSF(self.hidden_size, init_scale=init_scale, init_shift=init_shift)
+            self.ssf_block = SSF(self.hidden_size, init_scale=init_scale, init_shift=init_shift)
+
         elif name in ("", "none", "null"):
-            pass  # no adapter
+            pass
         else:
             raise ValueError(f"Unknown adapter NAME='{adapter_config.NAME}'")
 
     def forward(self, x):
-        # Standard ViT block
+        name = str(getattr(self.adapter_config, "NAME", "")).lower()
+
         h = x
         x = self.attention_norm(x)
         x, weights = self.attn(x)
+        if name == "ssf" and self.ssf_attn is not None:
+            x = self.ssf_attn(x)
         x = x + h
 
         h = x
         x = self.ffn_norm(x)
         x = self.ffn(x)
+        if name == "ssf" and self.ssf_ffn is not None:
+            x = self.ssf_ffn(x)
 
-        # Adapter path(s)
-        name = str(getattr(self.adapter_config, "NAME", "")).lower()
         if name == "pfeiffer":
             adpt = self.adapter_downsample(x)
             adpt = self.adapter_act_fn(adpt)
             adpt = self.adapter_upsample(adpt)
             x = x + adpt
         elif name == "hcc" and self.token_adapter is not None:
-            # HCCTokenAdapter already contains the residual gate inside
             x = self.token_adapter(x)
+        elif name == "adaptformer" and self.adaptformer_adapter is not None:
+            x = x + self.adaptformer_adapter(h)
 
-        # MLP residual
         x = x + h
+        if name == "ssf" and self.ssf_block is not None:
+            x = self.ssf_block(x)
         return x, weights
 
     def load_from(self, weights, n_block):

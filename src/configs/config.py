@@ -26,7 +26,7 @@ _C.SEED = None
 # Model options
 # ----------------------------------------------------------------------
 _C.MODEL = CfgNode()
-# one of linear, end2end, prompt, adapter, side, partial-1, tinytl-bias
+# one of linear, end2end/full/finetune, prompt, adapter, side, partial-1, tinytl-bias
 _C.MODEL.TRANSFER_TYPE = "linear"
 _C.MODEL.WEIGHT_PATH = ""      # if resume from some checkpoint file
 _C.MODEL.SAVE_CKPT = False
@@ -83,16 +83,47 @@ _C.MODEL.ADAPTER.NAME = "none"   # e.g. "HCC" or other adapter names
 _C.MODEL.ADAPTER.HCC = CfgNode()
 _C.MODEL.ADAPTER.HCC.M = 1
 _C.MODEL.ADAPTER.HCC.H = 1
-_C.MODEL.ADAPTER.HCC.AXIS = "h"             # "h" | "w" | "hw"
-_C.MODEL.ADAPTER.HCC.PER_CHANNEL = True
+_C.MODEL.ADAPTER.HCC.AXIS = "hw"            # "h" | "w" | "hw"
+_C.MODEL.ADAPTER.HCC.PER_CHANNEL = None       # legacy; True -> ALPHA_GROUP=1
+_C.MODEL.ADAPTER.HCC.ALPHA_GROUP = 16         # channels sharing one alpha vector
 _C.MODEL.ADAPTER.HCC.TIE_SYM = True
-_C.MODEL.ADAPTER.HCC.USE_PW = False
-_C.MODEL.ADAPTER.HCC.PW_RATIO = 8
-_C.MODEL.ADAPTER.HCC.USE_BN = True
+_C.MODEL.ADAPTER.HCC.USE_PW = None            # legacy; True -> NO_PW=False
+_C.MODEL.ADAPTER.HCC.NO_PW = True
+_C.MODEL.ADAPTER.HCC.PW_RATIO = 32
+_C.MODEL.ADAPTER.HCC.PW_GROUPS = 4
+_C.MODEL.ADAPTER.HCC.USE_BN = False
 _C.MODEL.ADAPTER.HCC.RESIDUAL_SCALE = 1.0
-_C.MODEL.ADAPTER.HCC.GATE_INIT = 0.1
+_C.MODEL.ADAPTER.HCC.GATE_INIT = 0.0
 _C.MODEL.ADAPTER.HCC.PADDING = "reflect"
+
+# ---- LoRA baseline ----
+_C.MODEL.ADAPTER.LORA = CfgNode()
+_C.MODEL.ADAPTER.LORA.RANK = 8
+_C.MODEL.ADAPTER.LORA.ALPHA = 16.0
+_C.MODEL.ADAPTER.LORA.DROPOUT = 0.0
+_C.MODEL.ADAPTER.LORA.TARGETS = "query,value"
+
+# ---- AdaptFormer baseline ----
+_C.MODEL.ADAPTER.ADAPT_FORMER = CfgNode()
+_C.MODEL.ADAPTER.ADAPT_FORMER.REDUCTION_FACTOR = 16
+_C.MODEL.ADAPTER.ADAPT_FORMER.SCALE = 1.0
+_C.MODEL.ADAPTER.ADAPT_FORMER.DROPOUT = 0.0
+
+# ---- SSF baseline ----
+_C.MODEL.ADAPTER.SSF = CfgNode()
+_C.MODEL.ADAPTER.SSF.INIT_SCALE = 1.0
+_C.MODEL.ADAPTER.SSF.INIT_SHIFT = 0.0
+
 # ----------------------------------------------------------------------
+# Profiling options used by tools/profile_efficiency.py and trainer history
+# ----------------------------------------------------------------------
+_C.PROFILE = CfgNode()
+_C.PROFILE.ENABLED = False
+_C.PROFILE.BATCH_SIZE = 32
+_C.PROFILE.WARMUP = 5
+_C.PROFILE.REPEAT = 30
+_C.PROFILE.TRAIN_STEPS = 3
+_C.PROFILE.USE_FVCORE = True
 
 # ----------------------------------------------------------------------
 # Solver options

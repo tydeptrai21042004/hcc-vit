@@ -1,6 +1,19 @@
-# src/models/vit_adapter/hcc_adapter.py
-from typing import Tuple, Optional
+#!/usr/bin/env python3
+"""
+DT1D/HCC token adapter for Vision Transformer experiments.
+
+This implementation mirrors the corrected 1D-DT adapter behavior:
+  * axial depthwise 1D filtering on H/W patch-token grids;
+  * group-shared symmetric coefficients with ceil(C / channels_per_group);
+  * safe residual gate initialization, default 0.0;
+  * optional grouped point-wise bottleneck;
+  * axis='hw' averages the H and W responses instead of summing them.
+"""
+from __future__ import annotations
+
+import math
 from math import gcd
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -9,187 +22,175 @@ import torch.nn.functional as F
 
 class HCCAdapter(nn.Module):
     """
-    Hartley–Cosine (even) shift aggregation via depthwise dilated conv on feature maps.
+    Axial depthwise DT1D/HCC adapter over feature maps.
 
-    Updated to match DT1DAdapter:
-      - group-shared alpha via alpha_group (channels-per-alpha-group)
-      - optional grouped PW bottleneck mixing (pw_groups)
-      - new API: no_pw (inverse of legacy use_pw)
-      - legacy compatibility: per_channel -> alpha_group=1, use_pw -> no_pw
-      - padding fixed (no value=None for reflect/replicate)
+    Args:
+        C: Number of channels / ViT embedding dimension.
+        M: Number of side taps. Kernel size is 2*M + 1.
+        h: Dilation factor.
+        axis: 'h', 'w', or 'hw'.
+        alpha_group: Number of channels sharing one alpha vector.
+        tie_sym: Keep left/right taps tied. This implementation is symmetric.
+        no_pw: If True, disables point-wise bottleneck mixing.
+        pw_ratio: Reduction ratio for optional point-wise bottleneck.
+        pw_groups: Maximum grouped-conv groups for point-wise bottleneck.
+        gate_init: Residual gate initialization. Use 0.0 for identity-safe PEFT.
+        per_channel/use_pw: Legacy compatibility with the original HCC config.
     """
+
     def __init__(
         self,
         C: int,
         M: int = 1,
         h: int = 1,
         axis: str = "hw",
-
-        # ---- NEW (DT1D-style) ----
-        alpha_group: int = 16,          # channels per alpha group
+        alpha_group: int = 16,
         tie_sym: bool = True,
-        no_pw: bool = False,
+        no_pw: bool = True,
         pw_ratio: int = 32,
         pw_groups: int = 4,
         use_bn: bool = False,
         residual_scale: float = 1.0,
-        gate_init: float = 0.1,
+        gate_init: float = 0.0,
         padding_mode: str = "reflect",
-
-        # ---- legacy knobs (optional) ----
-        per_channel: Optional[bool] = None,  # if True -> alpha_group=1
-        use_pw: Optional[bool] = None,       # if provided -> no_pw = not use_pw
-
-        **legacy,  # swallow any unknown legacy kwargs
-    ):
+        per_channel: Optional[bool] = None,
+        use_pw: Optional[bool] = None,
+        **legacy,
+    ) -> None:
         super().__init__()
-        assert axis in ("h", "w", "hw")
-        self.C, self.M, self.h = int(C), int(M), int(h)
-        self.axis = axis
-        self.tie_sym = bool(tie_sym)
-        self.padding_mode = str(padding_mode)
-        self.residual_scale = float(residual_scale)
+        if axis not in {"h", "w", "hw"}:
+            raise ValueError(f"axis must be 'h', 'w', or 'hw', got {axis!r}")
+        if C <= 0:
+            raise ValueError("C must be positive")
+        if M < 0:
+            raise ValueError("M must be non-negative")
+        if h <= 0:
+            raise ValueError("h must be positive")
 
-        # ---- translate legacy args ----
-        # legacy: per_channel=True -> alpha_group=1
         if per_channel is not None:
             alpha_group = 1 if bool(per_channel) else int(alpha_group)
-        # legacy: use_pw=True -> no_pw=False
         if use_pw is not None:
-            no_pw = (not bool(use_pw))
-        # ignore any other legacy keys silently
+            no_pw = not bool(use_pw)
 
+        self.C = int(C)
+        self.M = int(M)
+        self.h = int(h)
+        self.axis = str(axis)
         self.alpha_group = max(1, int(alpha_group))
+        self.tie_sym = bool(tie_sym)
         self.no_pw = bool(no_pw)
         self.use_bn = bool(use_bn)
+        self.residual_scale = float(residual_scale)
+        self.padding_mode = str(padding_mode).lower()
 
-        # ---------- α coefficients (group-shared) ----------
-        # Interpret alpha_group as "channels per group"
-        # Number of groups: G = floor(C / alpha_group), at least 1
-        G = max(1, self.C // self.alpha_group)
-        ncoef = self.M + 1  # center + M side taps
-        self.alpha = nn.Parameter(torch.zeros(G, ncoef))
+        # Correct 1D-DT grouping: alpha_group means channels per shared filter.
+        # ceil handles remainder channels instead of dropping them.
+        self.num_alpha_groups = int(math.ceil(self.C / self.alpha_group))
+        ncoef = self.M + 1
+        self.alpha = nn.Parameter(torch.zeros(self.num_alpha_groups, ncoef))
         with torch.no_grad():
-            self.alpha[:, 0].fill_(1.0)  # identity-safe init
+            self.alpha[:, 0].fill_(1.0)
 
-        # ---------- optional channel mixing via PW (grouped) ----------
         if not self.no_pw:
-            Hhid = max(1, self.C // max(1, int(pw_ratio)))
-
-            g = max(1, int(pw_groups))
-            g = min(g, self.C, Hhid)
-
-            # ensure groups divide both C and Hhid
+            hidden = max(1, self.C // max(1, int(pw_ratio)))
+            g = max(1, min(int(pw_groups), self.C, hidden))
             g = gcd(g, self.C)
-            g = gcd(g, Hhid) or 1
-            self.pw_groups = g
-
+            g = gcd(g, hidden) or 1
+            self.pw_groups = int(g)
             self.pw = nn.Sequential(
-                nn.Conv2d(self.C, Hhid, 1, groups=g, bias=False),
-                nn.BatchNorm2d(Hhid) if self.use_bn else nn.Identity(),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(Hhid, self.C, 1, groups=g, bias=False),
+                nn.Conv2d(self.C, hidden, kernel_size=1, groups=self.pw_groups, bias=False),
+                nn.BatchNorm2d(hidden) if self.use_bn else nn.Identity(),
+                nn.GELU(),
+                nn.Conv2d(hidden, self.C, kernel_size=1, groups=self.pw_groups, bias=False),
                 nn.BatchNorm2d(self.C) if self.use_bn else nn.Identity(),
             )
         else:
+            self.pw_groups = 1
             self.pw = nn.Identity()
 
-        # ---------- global residual gate ----------
         self.gate = nn.Parameter(torch.tensor(float(gate_init), dtype=torch.float32))
 
-    def _build_even_kernel_1d(self, device, dtype) -> torch.Tensor:
-        """
-        Build symmetric 1D kernel of length K = 2M+1 from group-shared alpha.
-        Returns depthwise conv weight of shape (C, 1, K).
-        """
+    def _build_even_kernel_1d(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """Return depthwise conv weight of shape (C, 1, 2*M+1)."""
         K = 2 * self.M + 1
         center = self.M
-
-        G = max(1, self.C // self.alpha_group)
-        wg = torch.zeros(G, K, device=device, dtype=dtype)
-
-        # center + symmetric side taps
-        wg[:, center] = self.alpha[:, 0]
+        wg = torch.zeros(self.num_alpha_groups, K, device=device, dtype=dtype)
+        wg[:, center] = self.alpha[:, 0].to(dtype=dtype)
         for m in range(1, self.M + 1):
-            val = self.alpha[:, m]
+            val = self.alpha[:, m].to(dtype=dtype)
             wg[:, center - m] = val
-            # NOTE: tie_sym kept for API compatibility; kernel is symmetric unless you
-            # introduce separate right-tap params.
-            wg[:, center + m] = val if self.tie_sym else val
+            wg[:, center + m] = val  # symmetric/tied DT1D kernel
 
-        # L1-normalize per group (stable)
-        s = wg.abs().sum(dim=1, keepdim=True).clamp_min(1e-6)
-        wg = wg / s
+        # Stable per-group normalization. Keeps identity kernel unchanged at init.
+        denom = wg.abs().sum(dim=1, keepdim=True).clamp_min(1e-6)
+        wg = wg / denom
 
-        # expand group kernels to channels
-        reps = [self.alpha_group] * G
-        reps[-1] = self.C - self.alpha_group * (G - 1)  # handle remainder channels
-        w = torch.cat(
-            [wg[i].unsqueeze(0).repeat(reps[i], 1) for i in range(G)],
-            dim=0
-        )  # (C, K)
+        chunks = []
+        for gi in range(self.num_alpha_groups):
+            start = gi * self.alpha_group
+            end = min((gi + 1) * self.alpha_group, self.C)
+            n = end - start
+            if n > 0:
+                chunks.append(wg[gi].unsqueeze(0).repeat(n, 1))
+        w = torch.cat(chunks, dim=0)
+        if w.shape[0] != self.C:
+            raise RuntimeError(f"internal grouping error: built {w.shape[0]} kernels for C={self.C}")
+        return w.unsqueeze(1)
 
-        return w.unsqueeze(1)  # (C, 1, K)
+    @staticmethod
+    def _can_reflect(size: int, pad: int) -> bool:
+        # PyTorch reflect padding requires pad < input dimension.
+        return pad == 0 or pad < size
 
     def _pad(self, x: torch.Tensor, pad_h: int, pad_w: int) -> torch.Tensor:
         pads = (pad_w, pad_w, pad_h, pad_h)
+        if pad_h == 0 and pad_w == 0:
+            return x
+
         mode = self.padding_mode
-        if mode == "reflect":
-            return F.pad(x, pads, mode="reflect")
-        if mode == "replicate":
-            return F.pad(x, pads, mode="replicate")
-        # constant/zero padding fallback
+        if mode == "reflect" and not (
+            self._can_reflect(x.shape[-2], pad_h) and self._can_reflect(x.shape[-1], pad_w)
+        ):
+            mode = "replicate"
+
+        if mode in {"reflect", "replicate", "circular"}:
+            return F.pad(x, pads, mode=mode)
         return F.pad(x, pads, mode="constant", value=0.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B, C, H, W)
-        """
+        """x: (B, C, H, W)."""
+        if x.ndim != 4:
+            raise ValueError(f"HCCAdapter expects BCHW tensor, got shape {tuple(x.shape)}")
         B, C, H, W = x.shape
-        assert C == self.C, f"channel mismatch: got {C}, expected {self.C}"
+        if C != self.C:
+            raise ValueError(f"channel mismatch: got {C}, expected {self.C}")
 
-        w1d = self._build_even_kernel_1d(x.device, x.dtype)  # (C,1,K)
+        w1d = self._build_even_kernel_1d(x.device, x.dtype)
         K = 2 * self.M + 1
-
         y = torch.zeros_like(x)
+        n_axes = 0
 
         if "h" in self.axis:
             wh = w1d.view(self.C, 1, K, 1)
             xh = self._pad(x, pad_h=self.M * self.h, pad_w=0)
-            yh = F.conv2d(
-                xh, wh,
-                stride=1, padding=0,
-                dilation=(self.h, 1),
-                groups=self.C
-            )
-            y = y + yh
+            y = y + F.conv2d(xh, wh, stride=1, padding=0, dilation=(self.h, 1), groups=self.C)
+            n_axes += 1
 
         if "w" in self.axis:
             ww = w1d.view(self.C, 1, 1, K)
             xw = self._pad(x, pad_h=0, pad_w=self.M * self.h)
-            yw = F.conv2d(
-                xw, ww,
-                stride=1, padding=0,
-                dilation=(1, self.h),
-                groups=self.C
-            )
-            y = y + yw
+            y = y + F.conv2d(xw, ww, stride=1, padding=0, dilation=(1, self.h), groups=self.C)
+            n_axes += 1
 
+        if n_axes > 1:
+            y = y / float(n_axes)
         y = self.pw(y)
         return x + self.residual_scale * self.gate * y
 
 
 class HCCTokenAdapter(nn.Module):
-    """
-    Wraps HCCAdapter to operate on ViT tokens:
-      x: (B, N, D), N = 1 + H*W (class token first)
-      grid_size: (H, W)
+    """Apply HCCAdapter to ViT patch tokens while preserving the class token."""
 
-    Only patch tokens are transformed; class token is passthrough.
-
-    Updated to accept DT1D-style args (alpha_group/no_pw/pw_groups) and legacy
-    args (per_channel/use_pw) for compatibility.
-    """
     def __init__(
         self,
         embed_dim: int,
@@ -197,30 +198,24 @@ class HCCTokenAdapter(nn.Module):
         M: int = 1,
         h: int = 1,
         axis: str = "hw",
-
-        # DT1D-style
         alpha_group: int = 16,
         tie_sym: bool = True,
-        no_pw: bool = True,          # default matches your old HCCTokenAdapter(use_pw=False)
+        no_pw: bool = True,
         pw_ratio: int = 32,
         pw_groups: int = 4,
         use_bn: bool = False,
         residual_scale: float = 1.0,
-        gate_init: float = 0.1,
+        gate_init: float = 0.0,
         padding_mode: str = "reflect",
-
-        # legacy compatibility
         per_channel: Optional[bool] = None,
         use_pw: Optional[bool] = None,
-
         **legacy,
-    ):
+    ) -> None:
         super().__init__()
         self.D = int(embed_dim)
-        gh, gw = int(grid_size[0]), int(grid_size[1])
-        assert gh > 0 and gw > 0, f"invalid grid_size: {grid_size}"
-        self.gh, self.gw = gh, gw
-
+        self.gh, self.gw = int(grid_size[0]), int(grid_size[1])
+        if self.gh <= 0 or self.gw <= 0:
+            raise ValueError(f"invalid grid_size={grid_size}")
         self.hcc = HCCAdapter(
             C=self.D,
             M=M,
@@ -241,19 +236,18 @@ class HCCTokenAdapter(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B, N, D) with cls at position 0, patches follow
-        """
+        if x.ndim != 3:
+            raise ValueError(f"HCCTokenAdapter expects BND tensor, got shape {tuple(x.shape)}")
         B, N, D = x.shape
-        assert D == self.D, f"embed_dim mismatch: got {D}, expected {self.D}"
+        if D != self.D:
+            raise ValueError(f"embed_dim mismatch: got {D}, expected {self.D}")
         expected = 1 + self.gh * self.gw
-        assert N == expected, f"N={N} but grid {self.gh}x{self.gw} implies {expected}"
+        if N != expected:
+            raise ValueError(f"N={N}, but grid {self.gh}x{self.gw} implies {expected} tokens")
 
-        cls_tok = x[:, :1, :]  # (B,1,D)
-        patches = x[:, 1:, :]  # (B,H*W,D)
-
-        fmap = patches.transpose(1, 2).reshape(B, D, self.gh, self.gw)  # (B,D,H,W)
-        fmap_out = self.hcc(fmap)  # (B,D,H,W)
-        patches_out = fmap_out.reshape(B, D, self.gh * self.gw).transpose(1, 2)  # (B,H*W,D)
-
-        return torch.cat([cls_tok, patches_out], dim=1)
+        cls_tok = x[:, :1, :]
+        patches = x[:, 1:, :]
+        fmap = patches.transpose(1, 2).reshape(B, D, self.gh, self.gw)
+        fmap = self.hcc(fmap)
+        patches = fmap.reshape(B, D, self.gh * self.gw).transpose(1, 2)
+        return torch.cat([cls_tok, patches], dim=1)

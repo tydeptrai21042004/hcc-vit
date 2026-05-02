@@ -30,11 +30,13 @@ class ViT(nn.Module):
         else:
             prompt_cfg = None
 
-        if cfg.MODEL.TRANSFER_TYPE != "end2end" and "prompt" not in cfg.MODEL.TRANSFER_TYPE:
-            # linear, cls, tiny-tl, parital, adapter
+        # Only force the encoder into eval mode for methods that truly use a
+        # frozen feature extractor. Adapter/LoRA/AdaptFormer/SSF/BitFit/partial
+        # methods still contain trainable parameters inside the encoder, so the
+        # encoder must remain in train mode during training.
+        if cfg.MODEL.TRANSFER_TYPE in ("linear", "side", "cls", "cls-reinit", "prompt-noupdate"):
             self.froze_enc = True
         else:
-            # prompt, end2end, cls+prompt
             self.froze_enc = False
         
         if cfg.MODEL.TRANSFER_TYPE == "adapter":
@@ -146,10 +148,10 @@ class ViT(nn.Module):
         # adapter
         elif transfer_type == "adapter":
             for k, p in self.enc.named_parameters():
-                if "adapter" not in k:
+                if not any(tag in k for tag in ("adapter", "lora_", "ssf_")):
                     p.requires_grad = False
 
-        elif transfer_type == "end2end":
+        elif transfer_type in ("end2end", "full", "finetune"):
             logger.info("Enable all parameters update during training")
 
         else:
@@ -253,7 +255,7 @@ class Swin(ViT):
                 if "prompt" not in k and 'bias' not in k:
                     p.requires_grad = False
 
-        elif transfer_type == "end2end":
+        elif transfer_type in ("end2end", "full", "finetune"):
             logger.info("Enable all parameters update during training")
 
         else:
@@ -321,13 +323,13 @@ class SSLViT(ViT):
                 if "prompt" not in k:
                     p.requires_grad = False
 
-        elif transfer_type == "end2end":
+        elif transfer_type in ("end2end", "full", "finetune"):
             logger.info("Enable all parameters update during training")
         
         # adapter
         elif transfer_type == "adapter":
             for k, p in self.enc.named_parameters():
-                if "adapter" not in k:
+                if not any(tag in k for tag in ("adapter", "lora_", "ssf_")):
                     p.requires_grad = False
 
         else:

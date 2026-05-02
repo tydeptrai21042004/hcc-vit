@@ -3,6 +3,7 @@
 a trainer class
 """
 import datetime
+import json
 import time
 import torch
 import torch.nn as nn
@@ -152,8 +153,12 @@ class Trainer():
             self.cfg.DATA.CLASS_WEIGHTS_TYPE)
         # logger.info(f"class weights: {self.cls_weights}")
         patience = 0  # if > self.cfg.SOLVER.PATIENCE, stop training
+        history = []
 
         for epoch in range(total_epoch):
+            epoch_start_time = time.time()
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
             # reset averagemeters to measure per-epoch results
             losses.reset()
             batch_time.reset()
@@ -239,6 +244,31 @@ class Trainer():
             except KeyError:
                 return
 
+            epoch_record = {
+                "epoch": epoch + 1,
+                "lr": float(lr),
+                "train_loss": float(losses.avg),
+                "avg_batch_time_sec": float(batch_time.avg),
+                "avg_data_time_sec": float(data_time.avg),
+                "epoch_time_sec": float(time.time() - epoch_start_time),
+                "peak_train_memory_gb": float(gpu_mem_usage()),
+                "val_top1": float(curr_acc),
+            }
+            if test_loader is not None:
+                test_name = "test_" + test_loader.dataset.name
+                try:
+                    epoch_record["test_top1"] = float(
+                        self.evaluator.results[f"epoch_{epoch}"]["classification"][test_name]["top1"]
+                    )
+                except KeyError:
+                    pass
+            history.append(epoch_record)
+            try:
+                with open(os.path.join(self.cfg.OUTPUT_DIR, "history.json"), "w", encoding="utf-8") as f:
+                    json.dump(history, f, indent=2)
+            except Exception as exc:
+                logger.info(f"Could not save history.json: {exc}")
+
             if curr_acc > best_metric:
                 best_metric = curr_acc
                 best_epoch = epoch + 1
@@ -250,6 +280,19 @@ class Trainer():
             if patience >= self.cfg.SOLVER.PATIENCE:
                 logger.info("No improvement. Breaking out of loop.")
                 break
+
+        summary = {
+            "best_epoch": int(best_epoch),
+            "best_val_top1": float(best_metric),
+            "num_epochs_completed": len(history),
+            "mean_epoch_time_sec": float(sum(h["epoch_time_sec"] for h in history) / max(1, len(history))),
+            "max_peak_train_memory_gb": float(max([h["peak_train_memory_gb"] for h in history], default=0.0)),
+        }
+        try:
+            with open(os.path.join(self.cfg.OUTPUT_DIR, "convergence_summary.json"), "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
+        except Exception as exc:
+            logger.info(f"Could not save convergence_summary.json: {exc}")
 
         # save the last checkpoints
         # if self.cfg.MODEL.SAVE_CKPT:
