@@ -18,14 +18,17 @@ MODEL:
     HCC:
       M: 1
       H: 1
-      AXIS: "h"               # "h" | "w" | "hw"
-      PER_CHANNEL: True
+      AXIS: "hw"               # "h" | "w" | "hw"
+      PER_CHANNEL: null
+      ALPHA_GROUP: 16
       TIE_SYM: True
-      USE_PW: False           # ultra-light HCC, no 1x1 PW mixing
-      PW_RATIO: 8
-      USE_BN: True
+      USE_PW: null
+      NO_PW: True              # ultra-light HCC, no 1x1 PW mixing
+      PW_RATIO: 32
+      PW_GROUPS: 4
+      USE_BN: False
       RESIDUAL_SCALE: 1.0
-      GATE_INIT: 0.1
+      GATE_INIT: 0.0
       PADDING: "reflect"
 
 SOLVER:

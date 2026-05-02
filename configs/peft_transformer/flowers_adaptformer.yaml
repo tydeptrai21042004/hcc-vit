@@ -1,0 +1,24 @@
+_BASE_: ../base-finetune.yaml
+OUTPUT_DIR: outputs/peft_transformer/adaptformer
+DATA:
+  NAME: OxfordFlowers
+  DATAPATH: /path/to/flowers-102
+  FEATURE: sup_vitb16_224
+  NUMBER_CLASSES: 102
+  BATCH_SIZE: 64
+  NUM_WORKERS: 4
+MODEL:
+  TYPE: vit
+  TRANSFER_TYPE: adapter
+  ADAPTER:
+    NAME: AdaptFormer
+    ADAPT_FORMER:
+      REDUCTION_FACTOR: 16
+      SCALE: 1.0
+      DROPOUT: 0.0
+SOLVER:
+  TOTAL_EPOCH: 50
+  BASE_LR: 5.0e-4
+  WEIGHT_DECAY: 1.0e-4
+  OPTIMIZER: adamw
+  LOG_EVERY_N: 10
