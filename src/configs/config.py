@@ -82,15 +82,24 @@ _C.MODEL.ADAPTER.NAME = "none"   # e.g. "HCC" or other adapter names
 
 _C.MODEL.ADAPTER.HCC = CfgNode()
 _C.MODEL.ADAPTER.HCC.M = 1
-_C.MODEL.ADAPTER.HCC.H = 1
-_C.MODEL.ADAPTER.HCC.AXIS = "h"             # "h" | "w" | "hw"
-_C.MODEL.ADAPTER.HCC.PER_CHANNEL = True
+_C.MODEL.ADAPTER.HCC.H = 1                      # legacy single dilation fallback
+_C.MODEL.ADAPTER.HCC.AXIS = "hw"               # "h" | "w" | "hw"
+_C.MODEL.ADAPTER.HCC.DILATIONS = "1,2,4"       # multi-dilation proposal path; set "1" for old single scale
+_C.MODEL.ADAPTER.HCC.SCALE_ADAPTIVE = True      # static/global softmax gate over axis--dilation responses
+_C.MODEL.ADAPTER.HCC.SEPARATE_AXIS_KERNELS = True
+_C.MODEL.ADAPTER.HCC.GATE_TEMPERATURE = 1.0
+_C.MODEL.ADAPTER.HCC.INPUT_ADAPTIVE_GATE = False  # kept only for old CLI compatibility
+_C.MODEL.ADAPTER.HCC.GATE_REDUCTION = 4           # ignored in static-gate proposal
+_C.MODEL.ADAPTER.HCC.ALPHA_GROUP = 16           # channels per shared alpha group
+_C.MODEL.ADAPTER.HCC.PER_CHANNEL = False        # legacy override; True forces ALPHA_GROUP=1
 _C.MODEL.ADAPTER.HCC.TIE_SYM = True
-_C.MODEL.ADAPTER.HCC.USE_PW = False
-_C.MODEL.ADAPTER.HCC.PW_RATIO = 8
-_C.MODEL.ADAPTER.HCC.USE_BN = True
+_C.MODEL.ADAPTER.HCC.NO_PW = True               # proposal can be ultra-light; USE_PW=True overrides this
+_C.MODEL.ADAPTER.HCC.USE_PW = False             # legacy inverse of NO_PW
+_C.MODEL.ADAPTER.HCC.PW_RATIO = 32
+_C.MODEL.ADAPTER.HCC.PW_GROUPS = 4
+_C.MODEL.ADAPTER.HCC.USE_BN = False
 _C.MODEL.ADAPTER.HCC.RESIDUAL_SCALE = 1.0
-_C.MODEL.ADAPTER.HCC.GATE_INIT = 0.1
+_C.MODEL.ADAPTER.HCC.GATE_INIT = 0.0            # identity-safe inserted adapter
 _C.MODEL.ADAPTER.HCC.PADDING = "reflect"
 # ----------------------------------------------------------------------
 

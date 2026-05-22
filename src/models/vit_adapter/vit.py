@@ -56,20 +56,30 @@ class ADPT_Block(nn.Module):
             assert grid_size is not None, "grid_size (H, W) is required for HCC token adapter"
             H, W = int(grid_size[0]), int(grid_size[1])
             # map ViT tokens <-> (B, D, H, W) and reuse your exact HCC math
+            hcc = adapter_config.HCC
             self.token_adapter = HCCTokenAdapter(
                 embed_dim=self.hidden_size,
                 grid_size=(H, W),
-                M=getattr(adapter_config.HCC, "M", 1),
-                h=getattr(adapter_config.HCC, "H", 1),
-                axis=getattr(adapter_config.HCC, "AXIS", "hw"),
-                per_channel=getattr(adapter_config.HCC, "PER_CHANNEL", True),
-                tie_sym=getattr(adapter_config.HCC, "TIE_SYM", True),
-                use_pw=getattr(adapter_config.HCC, "USE_PW", False),
-                pw_ratio=getattr(adapter_config.HCC, "PW_RATIO", 8),
-                use_bn=getattr(adapter_config.HCC, "USE_BN", True),
-                residual_scale=getattr(adapter_config.HCC, "RESIDUAL_SCALE", 1.0),
-                gate_init=getattr(adapter_config.HCC, "GATE_INIT", 0.1),
-                padding_mode=getattr(adapter_config.HCC, "PADDING", "reflect"),
+                M=getattr(hcc, "M", 1),
+                h=getattr(hcc, "H", 1),
+                axis=getattr(hcc, "AXIS", "hw"),
+                alpha_group=getattr(hcc, "ALPHA_GROUP", 16),
+                per_channel=getattr(hcc, "PER_CHANNEL", None),
+                tie_sym=getattr(hcc, "TIE_SYM", True),
+                no_pw=getattr(hcc, "NO_PW", not getattr(hcc, "USE_PW", False)),
+                use_pw=getattr(hcc, "USE_PW", None),
+                pw_ratio=getattr(hcc, "PW_RATIO", 32),
+                pw_groups=getattr(hcc, "PW_GROUPS", 4),
+                use_bn=getattr(hcc, "USE_BN", False),
+                residual_scale=getattr(hcc, "RESIDUAL_SCALE", 1.0),
+                gate_init=getattr(hcc, "GATE_INIT", 0.0),
+                padding_mode=getattr(hcc, "PADDING", "reflect"),
+                dilations=getattr(hcc, "DILATIONS", None),
+                scale_adaptive=getattr(hcc, "SCALE_ADAPTIVE", False),
+                separate_axis_kernels=getattr(hcc, "SEPARATE_AXIS_KERNELS", True),
+                gate_temperature=getattr(hcc, "GATE_TEMPERATURE", 1.0),
+                input_adaptive_gate=getattr(hcc, "INPUT_ADAPTIVE_GATE", False),
+                gate_reduction=getattr(hcc, "GATE_REDUCTION", 4),
             )
         elif name in ("", "none", "null"):
             pass  # no adapter

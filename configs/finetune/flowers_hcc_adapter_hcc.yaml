@@ -16,16 +16,25 @@ MODEL:
     # ---- HCC-specific knobs (must match config.py & HCCTokenAdapter) ----
     NAME: "HCC"
     HCC:
+      # DT1D / finite weighted h-Hartley--cosine proposal settings
       M: 1
       H: 1
-      AXIS: "h"               # "h" | "w" | "hw"
-      PER_CHANNEL: True
+      AXIS: "hw"
+      DILATIONS: "1,2,4"
+      SCALE_ADAPTIVE: True
+      SEPARATE_AXIS_KERNELS: True
+      GATE_TEMPERATURE: 1.0
+      INPUT_ADAPTIVE_GATE: False   # static/global gates, not sample-adaptive router
+      ALPHA_GROUP: 16
+      PER_CHANNEL: False           # True forces one alpha group per channel
       TIE_SYM: True
-      USE_PW: False           # ultra-light HCC, no 1x1 PW mixing
-      PW_RATIO: 8
-      USE_BN: True
+      NO_PW: True                  # ultra-light mode
+      USE_PW: False                # legacy inverse of NO_PW
+      PW_RATIO: 32
+      PW_GROUPS: 4
+      USE_BN: False
       RESIDUAL_SCALE: 1.0
-      GATE_INIT: 0.1
+      GATE_INIT: 0.0               # identity-safe initialization
       PADDING: "reflect"
 
 SOLVER:

@@ -24,20 +24,31 @@ def build_adapter(name, embed_dim, grid_size, cfg):
     """
     name = (name or "").lower()
     if name == "hcc":
+        hcc = cfg.ADAPTER.HCC
         return HCCTokenAdapter(
             embed_dim=embed_dim,
             grid_size=grid_size,                # (H, W) of patch grid
-            M=cfg.ADAPTER.HCC.M,
-            h=cfg.ADAPTER.HCC.H,
-            axis=cfg.ADAPTER.HCC.AXIS,
-            per_channel=cfg.ADAPTER.HCC.PER_CHANNEL,
-            tie_sym=cfg.ADAPTER.HCC.TIE_SYM,
-            use_pw=cfg.ADAPTER.HCC.USE_PW,
-            pw_ratio=cfg.ADAPTER.HCC.PW_RATIO,
-            use_bn=cfg.ADAPTER.HCC.USE_BN,
-            residual_scale=cfg.ADAPTER.HCC.RESIDUAL_SCALE,
-            gate_init=cfg.ADAPTER.HCC.GATE_INIT,
-            padding_mode=cfg.ADAPTER.HCC.PADDING,
+            M=getattr(hcc, "M", 1),
+            h=getattr(hcc, "H", 1),
+            axis=getattr(hcc, "AXIS", "hw"),
+            alpha_group=getattr(hcc, "ALPHA_GROUP", 16),
+            per_channel=getattr(hcc, "PER_CHANNEL", None),
+            tie_sym=getattr(hcc, "TIE_SYM", True),
+            # Prefer the new NO_PW key. For old configs that only define USE_PW,
+            # convert USE_PW=True -> NO_PW=False.
+            no_pw=getattr(hcc, "NO_PW", not getattr(hcc, "USE_PW", False)),
+            pw_ratio=getattr(hcc, "PW_RATIO", 32),
+            pw_groups=getattr(hcc, "PW_GROUPS", 4),
+            use_bn=getattr(hcc, "USE_BN", False),
+            residual_scale=getattr(hcc, "RESIDUAL_SCALE", 1.0),
+            gate_init=getattr(hcc, "GATE_INIT", 0.0),
+            padding_mode=getattr(hcc, "PADDING", "reflect"),
+            dilations=getattr(hcc, "DILATIONS", None),
+            scale_adaptive=getattr(hcc, "SCALE_ADAPTIVE", False),
+            separate_axis_kernels=getattr(hcc, "SEPARATE_AXIS_KERNELS", True),
+            gate_temperature=getattr(hcc, "GATE_TEMPERATURE", 1.0),
+            input_adaptive_gate=getattr(hcc, "INPUT_ADAPTIVE_GATE", False),
+            gate_reduction=getattr(hcc, "GATE_REDUCTION", 4),
         )
     # Add more adapters here if needed (e.g., Pfeiffer, LoRA, etc.)
     return None
