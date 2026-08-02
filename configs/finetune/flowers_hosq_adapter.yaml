@@ -1,0 +1,49 @@
+_BASE_: ../base-finetune.yaml
+
+SEED: 0
+OUTPUT_DIR: "./output_hosq"
+RUN_N_TIMES: 1
+
+DATA:
+  NAME: "OxfordFlowers"
+  DATAPATH: ""                 # set to the Flowers102 dataset root
+  FEATURE: "sup_vitb16_224"
+  NUMBER_CLASSES: 102
+  MULTILABEL: False
+  CROPSIZE: 224
+  BATCH_SIZE: 64
+  NUM_WORKERS: 4
+  USE_TRAINVAL: False
+
+MODEL:
+  TYPE: "vit"
+  TRANSFER_TYPE: "adapter"
+  MODEL_ROOT: ""               # directory containing ViT-B_16-224.npz
+  SAVE_CKPT: False
+  ADAPTER:
+    NAME: "HOSQ"
+    STYLE: "Pfeiffer"          # retained only for old-config compatibility
+    HOSQ:
+      AXIS: "hw"
+      COARSE_GROUP: 32
+      SUBGROUP_SIZE: 8
+      RANK4: 1
+      RANK8: 2
+      NUM_PREFIX_TOKENS: 1
+      NO_PW: True
+      PW_RATIO: 32
+      PW_GROUPS: 4
+      USE_BN: False
+      RESIDUAL_SCALE: 1.0
+      GATE_INIT: 0.01
+      PADDING: "reflect"
+      STRICT_PADDING: True
+
+SOLVER:
+  TOTAL_EPOCH: 10
+  BASE_LR: 0.005
+  WEIGHT_DECAY: 0.0001
+  OPTIMIZER: "adamw"
+  SCHEDULER: "cosine"
+  WARMUP_EPOCH: 5
+  LOG_EVERY_N: 10

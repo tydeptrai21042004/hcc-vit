@@ -3,11 +3,9 @@
 major actions here for training VTAB datasets: use val200 to find best lr/wd, and retrain on train800val200, report results on test
 """
 import glob
-import numpy as np
 import os
 import torch
 import warnings
-import random
 
 from time import sleep
 from random import randint
@@ -19,6 +17,7 @@ from src.engine.evaluator import Evaluator
 from src.engine.trainer import Trainer
 from src.models.build_model import build_model
 from src.utils.file_io import PathManager
+from src.utils.reproducibility import set_reproducible_seed
 
 from launch import default_argument_parser, logging_train_setup
 warnings.filterwarnings("ignore")
@@ -181,11 +180,8 @@ def train(cfg, args, final_runs):
         torch.cuda.empty_cache()
     # main training / eval actions here
 
-    # fix the seed for reproducibility
-    if cfg.SEED is not None:
-        torch.manual_seed(cfg.SEED)
-        np.random.seed(cfg.SEED)
-        random.seed(0)
+    # Seed before constructing loaders and the model.
+    set_reproducible_seed(cfg.SEED, deterministic=True)
 
     # setup training env including loggers
     logging_train_setup(args, cfg)

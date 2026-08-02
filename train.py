@@ -6,8 +6,6 @@ import os
 import torch
 import warnings
 
-import numpy as np
-import random
 
 from time import sleep
 from random import randint
@@ -19,6 +17,7 @@ from src.engine.evaluator import Evaluator
 from src.engine.trainer import Trainer
 from src.models.build_model import build_model
 from src.utils.file_io import PathManager
+from src.utils.reproducibility import set_reproducible_seed
 
 from launch import default_argument_parser, logging_train_setup
 warnings.filterwarnings("ignore")
@@ -35,16 +34,16 @@ def setup(args):
     # Simple single-node init for Colab
     cfg.DIST_INIT_PATH = "env://"
 
-    # Setup output dir: OUTPUT_DIR / DATA.NAME / FEATURE / lr_wd / run1
+    # Setup output dir: OUTPUT_DIR / DATA.NAME / FEATURE / lr_wd / seed_<n>
     output_dir = cfg.OUTPUT_DIR
     lr = cfg.SOLVER.BASE_LR
     wd = cfg.SOLVER.WEIGHT_DECAY
     output_folder = os.path.join(
         cfg.DATA.NAME, cfg.DATA.FEATURE, f"lr{lr}_wd{wd}"
     )
-    output_path = os.path.join(output_dir, output_folder, "run1")
+    run_name = "run1" if cfg.SEED is None else f"seed_{int(cfg.SEED)}"
+    output_path = os.path.join(output_dir, output_folder, run_name)
 
-    # Make dirs (no multi-run logic, just reuse run1)
     PathManager.mkdirs(output_path)
     cfg.OUTPUT_DIR = output_path
 
@@ -54,10 +53,11 @@ def setup(args):
 
 
 def get_loaders(cfg, logger):
-    logger.info("Loading training data (final training data for vtab)...")
-    if cfg.DATA.NAME.startswith("vtab-"):
+    if cfg.DATA.USE_TRAINVAL:
+        logger.info("Loading combined train+validation data...")
         train_loader = data_loader.construct_trainval_loader(cfg)
     else:
+        logger.info("Loading training data with an independent validation split...")
         train_loader = data_loader.construct_train_loader(cfg)
 
     logger.info("Loading validation data...")
@@ -79,11 +79,8 @@ def train(cfg, args):
 
     # main training / eval actions here
 
-    # fix the seed for reproducibility
-    if cfg.SEED is not None:
-        torch.manual_seed(cfg.SEED)
-        np.random.seed(cfg.SEED)
-        random.seed(0)
+    # Seed before dataset, DataLoader, and model construction.
+    applied_seed = set_reproducible_seed(cfg.SEED, deterministic=True)
 
     # setup training env including loggers
     logging_train_setup(args, cfg)
@@ -97,14 +94,11 @@ def train(cfg, args):
     evaluator = Evaluator()
     logger.info("Setting up Trainer...")
     trainer = Trainer(cfg, model, evaluator, cur_device)
+    logger.info(f"Reproducibility seed: {applied_seed}")
 
-    if train_loader:
-        trainer.train_classifier(train_loader, val_loader, test_loader)
-    else:
-        print("No train loader presented. Exit")
-
-    if cfg.SOLVER.TOTAL_EPOCH == 0:
-        trainer.eval_classifier(test_loader, "test", 0)
+    if not train_loader:
+        raise RuntimeError("No training loader was constructed")
+    return trainer.train_classifier(train_loader, val_loader, test_loader)
 
 
 def main(args):

@@ -1,0 +1,11 @@
+# HOSQ additions use only PyTorch. These packages are required by the original repository.
+torch
+torchvision
+timm
+ml-collections
+fvcore
+iopath
+numpy
+scipy
+pyyaml
+pytest

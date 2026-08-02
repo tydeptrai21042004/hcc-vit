@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ViT with adapters (Pfeiffer or HCC-token adapter).
+ViT with Pfeiffer, HCC-DT1D, or HOSQ-DT1D token adapters.
 """
 import copy
 import numpy as np
@@ -16,8 +16,15 @@ from ...utils import logging
 logger = logging.get_logger("visual_prompt")
 
 # NEW: bring in your token-space wrapper around HCC
-from .hcc_adapter import HCCTokenAdapter
+from .hcc_adapter import HCCTokenAdapter, HOSQTokenAdapter
 
+def _adapter_name(adapter_config):
+    name = str(getattr(adapter_config, "NAME", "")).strip().lower()
+    if name in ("", "none", "null"):
+        style = str(getattr(adapter_config, "STYLE", "Pfeiffer")).strip().lower()
+        if style == "pfeiffer":
+            return "pfeiffer"
+    return name
 
 class ADPT_Block(nn.Module):
     """
@@ -26,6 +33,7 @@ class ADPT_Block(nn.Module):
     Supported:
       - adapter_config.NAME == "Pfeiffer": classic down->act->up MLP adapter
       - adapter_config.NAME == "HCC":     token-space HCC applied to patch tokens
+      - adapter_config.NAME == "HOSQ":    hierarchical quotient DT1D on patch tokens
     """
     def __init__(self, config, vis, adapter_config, grid_size=None):
         super().__init__()
@@ -36,9 +44,9 @@ class ADPT_Block(nn.Module):
         self.attn = Attention(config, vis)
 
         self.adapter_config = adapter_config
-        self.token_adapter = None  # only used when NAME == "HCC"
+        self.token_adapter = None  # used by HCC and HOSQ token adapters
 
-        name = str(getattr(adapter_config, "NAME", "")).lower()
+        name = _adapter_name(adapter_config)
 
         if name == "pfeiffer":
             red = int(adapter_config.REDUCATION_FACTOR)
@@ -81,6 +89,28 @@ class ADPT_Block(nn.Module):
                 input_adaptive_gate=getattr(hcc, "INPUT_ADAPTIVE_GATE", False),
                 gate_reduction=getattr(hcc, "GATE_REDUCTION", 4),
             )
+        elif name == "hosq":
+            assert grid_size is not None, "grid_size (H, W) is required for HOSQ token adapter"
+            H, W = int(grid_size[0]), int(grid_size[1])
+            hosq = adapter_config.HOSQ
+            self.token_adapter = HOSQTokenAdapter(
+                embed_dim=self.hidden_size,
+                grid_size=(H, W),
+                num_prefix_tokens=getattr(hosq, "NUM_PREFIX_TOKENS", 1),
+                axis=getattr(hosq, "AXIS", "hw"),
+                coarse_group=getattr(hosq, "COARSE_GROUP", 32),
+                subgroup_size=getattr(hosq, "SUBGROUP_SIZE", 8),
+                rank4=getattr(hosq, "RANK4", 1),
+                rank8=getattr(hosq, "RANK8", 2),
+                no_pw=getattr(hosq, "NO_PW", True),
+                pw_ratio=getattr(hosq, "PW_RATIO", 32),
+                pw_groups=getattr(hosq, "PW_GROUPS", 4),
+                use_bn=getattr(hosq, "USE_BN", False),
+                residual_scale=getattr(hosq, "RESIDUAL_SCALE", 1.0),
+                gate_init=getattr(hosq, "GATE_INIT", 0.01),
+                padding_mode=getattr(hosq, "PADDING", "reflect"),
+                strict_padding=getattr(hosq, "STRICT_PADDING", True),
+            )
         elif name in ("", "none", "null"):
             pass  # no adapter
         else:
@@ -98,14 +128,14 @@ class ADPT_Block(nn.Module):
         x = self.ffn(x)
 
         # Adapter path(s)
-        name = str(getattr(self.adapter_config, "NAME", "")).lower()
+        name = _adapter_name(self.adapter_config)
         if name == "pfeiffer":
             adpt = self.adapter_downsample(x)
             adpt = self.adapter_act_fn(adpt)
             adpt = self.adapter_upsample(adpt)
             x = x + adpt
-        elif name == "hcc" and self.token_adapter is not None:
-            # HCCTokenAdapter already contains the residual gate inside
+        elif name in ("hcc", "hosq") and self.token_adapter is not None:
+            # The token adapter already contains its residual gate
             x = self.token_adapter(x)
 
         # MLP residual

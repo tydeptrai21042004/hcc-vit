@@ -101,6 +101,23 @@ _C.MODEL.ADAPTER.HCC.USE_BN = False
 _C.MODEL.ADAPTER.HCC.RESIDUAL_SCALE = 1.0
 _C.MODEL.ADAPTER.HCC.GATE_INIT = 0.0            # identity-safe inserted adapter
 _C.MODEL.ADAPTER.HCC.PADDING = "reflect"
+
+# ---- HOSQ-DT1D: hierarchical orthogonal spectral quotient adapter ----
+_C.MODEL.ADAPTER.HOSQ = CfgNode()
+_C.MODEL.ADAPTER.HOSQ.AXIS = "hw"               # "h" | "w" | "hw"
+_C.MODEL.ADAPTER.HOSQ.COARSE_GROUP = 32          # channels sharing the coarse MLQ8 kernel
+_C.MODEL.ADAPTER.HOSQ.SUBGROUP_SIZE = 8          # subgroup resolution for orthogonal details
+_C.MODEL.ADAPTER.HOSQ.RANK4 = 1                  # active channel-contrast modes at offset 4
+_C.MODEL.ADAPTER.HOSQ.RANK8 = 2                  # active channel-contrast modes at offset 8
+_C.MODEL.ADAPTER.HOSQ.NUM_PREFIX_TOKENS = 1      # class token for standard ViT
+_C.MODEL.ADAPTER.HOSQ.NO_PW = True               # final proposal: no pointwise mixer
+_C.MODEL.ADAPTER.HOSQ.PW_RATIO = 32              # used only by pointwise ablation
+_C.MODEL.ADAPTER.HOSQ.PW_GROUPS = 4
+_C.MODEL.ADAPTER.HOSQ.USE_BN = False
+_C.MODEL.ADAPTER.HOSQ.RESIDUAL_SCALE = 1.0
+_C.MODEL.ADAPTER.HOSQ.GATE_INIT = 0.01
+_C.MODEL.ADAPTER.HOSQ.PADDING = "reflect"
+_C.MODEL.ADAPTER.HOSQ.STRICT_PADDING = True       # fail instead of silently changing boundary rule
 # ----------------------------------------------------------------------
 
 # ----------------------------------------------------------------------
@@ -144,6 +161,7 @@ _C.DATA.CLASS_WEIGHTS_TYPE = "none"
 _C.DATA.CROPSIZE = 224  # or 384
 
 _C.DATA.NO_TEST = False
+_C.DATA.USE_TRAINVAL = False  # keep validation independent for best-checkpoint selection
 _C.DATA.BATCH_SIZE = 32
 # Number of data loader workers per training process
 _C.DATA.NUM_WORKERS = 4

@@ -7,6 +7,7 @@ import time
 import torch
 import torch.nn as nn
 import os
+import json
 
 from fvcore.common.config import CfgNode
 from fvcore.common.checkpoint import Checkpointer
@@ -129,20 +130,58 @@ class Trainer():
         labels = data["label"]
         return inputs, labels
 
+    @staticmethod
+    def _capture_trainable_state(model):
+        """Copy only trainable parameters to CPU for best-checkpoint selection."""
+        return {
+            name: parameter.detach().cpu().clone()
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        }
+
+    @staticmethod
+    @torch.no_grad()
+    def _restore_trainable_state(model, state):
+        current = dict(model.named_parameters())
+        missing = [name for name in state if name not in current]
+        if missing:
+            raise RuntimeError(f"Cannot restore missing trainable parameters: {missing[:5]}")
+        for name, value in state.items():
+            current[name].copy_(value.to(device=current[name].device, dtype=current[name].dtype))
+
+    @staticmethod
+    def _json_value(value):
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        if isinstance(value, dict):
+            return {str(k): Trainer._json_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [Trainer._json_value(v) for v in value]
+        if isinstance(value, (int, float, str, bool)) or value is None:
+            return value
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return str(value)
+
     def train_classifier(self, train_loader, val_loader, test_loader):
+        """Train with validation checkpoint selection and evaluate test once.
+
+        The test loader is intentionally excluded from the epoch loop.  The
+        model state with the highest validation top-1 score is restored before
+        the single final test evaluation.
         """
-        Train a classifier using epoch
-        """
-        # save the model prompt if required before training
         self.model.eval()
         self.save_prompt(0)
 
-        # setup training epoch params
-        total_epoch = self.cfg.SOLVER.TOTAL_EPOCH
+        total_epoch = int(self.cfg.SOLVER.TOTAL_EPOCH)
         total_data = len(train_loader)
         best_epoch = -1
-        best_metric = 0
-        log_interval = self.cfg.SOLVER.LOG_EVERY_N
+        best_metric = float("-inf")
+        best_state = None
+        log_interval = max(1, int(self.cfg.SOLVER.LOG_EVERY_N))
 
         losses = AverageMeter('Loss', ':.4e')
         batch_time = AverageMeter('Time', ':6.3f')
@@ -150,114 +189,142 @@ class Trainer():
 
         self.cls_weights = train_loader.dataset.get_class_weights(
             self.cfg.DATA.CLASS_WEIGHTS_TYPE)
-        # logger.info(f"class weights: {self.cls_weights}")
-        patience = 0  # if > self.cfg.SOLVER.PATIENCE, stop training
+        patience = 0
+        train_start = time.perf_counter()
+        completed_epochs = 0
 
         for epoch in range(total_epoch):
-            # reset averagemeters to measure per-epoch results
+            completed_epochs = epoch + 1
             losses.reset()
             batch_time.reset()
             data_time.reset()
 
-            lr = self.scheduler.get_lr()[0]
+            sampler = getattr(train_loader, "sampler", None)
+            if hasattr(sampler, "set_epoch"):
+                sampler.set_epoch(epoch)
+
+            try:
+                lr = self.scheduler.get_last_lr()[0]
+            except AttributeError:
+                lr = self.scheduler.get_lr()[0]
             logger.info(
                 "Training {} / {} epoch, with learning rate {}".format(
                     epoch + 1, total_epoch, lr
                 )
             )
 
-            # Enable training mode
             self.model.train()
-
             end = time.time()
-
             for idx, input_data in enumerate(train_loader):
                 if self.cfg.DBG and idx == 20:
-                    # if debugging, only need to see the first few iterations
                     break
-                
+
                 X, targets = self.get_input(input_data)
-                # logger.info(X.shape)
-                # logger.info(targets.shape)
-                # measure data loading time
                 data_time.update(time.time() - end)
-
                 train_loss, _ = self.forward_one_batch(X, targets, True)
-
                 if train_loss == -1:
-                    # continue
-                    return None
+                    raise RuntimeError("Training stopped because a non-finite loss was encountered")
 
-                losses.update(train_loss.item(), X.shape[0])
-
-                # measure elapsed time
+                losses.update(float(train_loss.item()), X.shape[0])
                 batch_time.update(time.time() - end)
                 end = time.time()
 
-                # log during one batch
                 if (idx + 1) % log_interval == 0:
                     seconds_per_batch = batch_time.val
                     eta = datetime.timedelta(seconds=int(
-                        seconds_per_batch * (total_data - idx - 1) + seconds_per_batch*total_data*(total_epoch-epoch-1)))
+                        seconds_per_batch * (total_data - idx - 1)
+                        + seconds_per_batch * total_data * (total_epoch - epoch - 1)
+                    ))
                     logger.info(
-                        "\tTraining {}/{}. train loss: {:.4f},".format(
-                            idx + 1,
-                            total_data,
-                            train_loss
+                        "\tTraining {}/{}. train loss: {:.4f}, ".format(
+                            idx + 1, total_data, float(train_loss.item())
                         )
-                        + "\t{:.4f} s / batch. (data: {:.2e}). ETA={}, ".format(
-                            seconds_per_batch,
-                            data_time.val,
-                            str(eta),
+                        + "{:.4f} s / batch. (data: {:.2e}). ETA={}, ".format(
+                            seconds_per_batch, data_time.val, str(eta)
                         )
-                        + "max mem: {:.1f} GB ".format(gpu_mem_usage())
+                        + "max mem: {:.1f} GB".format(gpu_mem_usage())
                     )
+
             logger.info(
-                "Epoch {} / {}: ".format(epoch + 1, total_epoch)
-                + "avg data time: {:.2e}, avg batch time: {:.4f}, ".format(
-                    data_time.avg, batch_time.avg)
-                + "average train loss: {:.4f}".format(losses.avg))
-             # update lr, scheduler.step() must be called after optimizer.step() according to the docs: https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate  # noqa
+                "Epoch {} / {}: avg data time: {:.2e}, avg batch time: {:.4f}, "
+                "average train loss: {:.4f}".format(
+                    epoch + 1, total_epoch, data_time.avg, batch_time.avg, losses.avg
+                )
+            )
             self.scheduler.step()
-
-            # Enable eval mode
             self.model.eval()
-
             self.save_prompt(epoch + 1)
 
-            # eval at each epoch for single gpu training
             self.evaluator.update_iteration(epoch)
-            self.eval_classifier(val_loader, "val", epoch == total_epoch - 1)
-            if test_loader is not None:
-                self.eval_classifier(
-                    test_loader, "test", epoch == total_epoch - 1)
+            val_metrics = self.eval_classifier(
+                val_loader, "val", save=(epoch == total_epoch - 1)
+            )
+            if val_metrics is None or "top1" not in val_metrics:
+                raise RuntimeError("Validation evaluation did not return a top1 metric")
+            current_metric = float(val_metrics["top1"])
 
-            # check the patience
-            t_name = "val_" + val_loader.dataset.name
-            try:
-                curr_acc = self.evaluator.results[f"epoch_{epoch}"]["classification"][t_name]["top1"]
-            except KeyError:
-                return
-
-            if curr_acc > best_metric:
-                best_metric = curr_acc
+            if current_metric > best_metric:
+                best_metric = current_metric
                 best_epoch = epoch + 1
+                best_state = self._capture_trainable_state(self.model)
                 logger.info(
-                    f'Best epoch {best_epoch}: best metric: {best_metric:.3f}')
+                    f"Best epoch {best_epoch}: validation top1={100.0 * best_metric:.3f}%"
+                )
                 patience = 0
             else:
                 patience += 1
-            if patience >= self.cfg.SOLVER.PATIENCE:
-                logger.info("No improvement. Breaking out of loop.")
+
+            if patience >= int(self.cfg.SOLVER.PATIENCE):
+                logger.info("No validation improvement. Breaking out of loop.")
                 break
 
-        # save the last checkpoints
-        # if self.cfg.MODEL.SAVE_CKPT:
-        #     Checkpointer(
-        #         self.model,
-        #         save_dir=self.cfg.OUTPUT_DIR,
-        #         save_to_disk=True
-        #     ).save("last_model")
+        if best_state is None:
+            # TOTAL_EPOCH=0 is permitted for evaluation-only workflows.
+            best_state = self._capture_trainable_state(self.model)
+            best_epoch = 0
+            best_metric = float("nan")
+        self._restore_trainable_state(self.model, best_state)
+        self.model.eval()
+
+        self.evaluator.update_iteration(-1)
+        test_metrics = {}
+        if test_loader is not None:
+            test_metrics = self.eval_classifier(test_loader, "test", save=True) or {}
+
+        total_train_time = time.perf_counter() - train_start
+        total_parameters = sum(parameter.numel() for parameter in self.model.parameters())
+        trainable_parameters = sum(
+            parameter.numel() for parameter in self.model.parameters()
+            if parameter.requires_grad
+        )
+        summary = {
+            "seed": 0 if self.cfg.SEED is None else int(self.cfg.SEED),
+            "best_epoch": int(best_epoch),
+            "best_val_top1": float(best_metric),
+            "best_val_acc1_percent": float(100.0 * best_metric),
+            "completed_epochs": int(completed_epochs),
+            "total_train_time_sec": float(total_train_time),
+            "mean_epoch_time_sec": float(total_train_time / max(1, completed_epochs)),
+            "trainable_parameters": int(trainable_parameters),
+            "total_parameters": int(total_parameters),
+            "test": self._json_value(test_metrics),
+        }
+
+        os.makedirs(self.cfg.OUTPUT_DIR, exist_ok=True)
+        with open(os.path.join(self.cfg.OUTPUT_DIR, "run_summary.json"), "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+        torch.save(self.evaluator.results, os.path.join(self.cfg.OUTPUT_DIR, "eval_results.pth"))
+        if self.cfg.MODEL.SAVE_CKPT:
+            torch.save(
+                {
+                    "seed": summary["seed"],
+                    "best_epoch": best_epoch,
+                    "best_val_top1": best_metric,
+                    "trainable_state": best_state,
+                },
+                os.path.join(self.cfg.OUTPUT_DIR, "best_trainable_state.pth"),
+            )
+        return summary
 
     @torch.no_grad()
     def save_prompt(self, epoch):
@@ -298,7 +365,7 @@ class Trainer():
             loss, outputs = self.forward_one_batch(X, targets, False)
             if loss == -1:
                 return
-            losses.update(loss, X.shape[0])
+            losses.update(float(loss.item()), X.shape[0])
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -327,10 +394,12 @@ class Trainer():
                 "--> side tuning alpha = {:.4f}".format(self.model.side_alpha))
         # total_testimages x num_classes
         joint_logits = torch.cat(total_logits, dim=0).cpu().numpy()
-        self.evaluator.classify(
+        metrics = self.evaluator.classify(
             joint_logits, total_targets,
             test_name, self.cfg.DATA.MULTILABEL,
         )
+        metrics = {} if metrics is None else dict(metrics)
+        metrics["loss"] = float(losses.avg)
 
         # save the probs and targets
         if save and self.cfg.MODEL.SAVE_CKPT:
@@ -340,3 +409,4 @@ class Trainer():
             torch.save(out, out_path)
             logger.info(
                 f"Saved logits and targets for {test_name} at {out_path}")
+        return metrics

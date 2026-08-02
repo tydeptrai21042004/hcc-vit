@@ -18,6 +18,13 @@ from ...utils import logging
 logger = logging.get_logger("visual_prompt")
 
 
+def _to_pair(value):
+    if isinstance(value, (tuple, list)):
+        return int(value[0]), int(value[1])
+    return int(value), int(value)
+
+
+
 class ADPT_VisionTransformerMoCo(VisionTransformerMoCo):
     def __init__(
         self, 
@@ -72,21 +79,28 @@ class ADPT_VisionTransformerMoCo(VisionTransformerMoCo):
         act_layer = act_layer or nn.GELU
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
 
-        if adapter_cfg.STYLE == "Pfeiffer":
-            self.blocks = nn.Sequential(*[
-                Pfeiffer_Block(
-                    adapter_config=adapter_cfg, 
-                    dim=embed_dim, 
-                    num_heads=num_heads, 
-                    mlp_ratio=mlp_ratio, 
-                    qkv_bias=qkv_bias, 
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate, 
-                    drop_path=dpr[i], 
-                    norm_layer=norm_layer, 
-                    act_layer=act_layer) for i in range(depth)])
-        else:
-            raise ValueError("Other adapter styles are not supported.")
+        image_hw = _to_pair(img_size)
+        patch_hw = _to_pair(patch_size)
+        if image_hw[0] % patch_hw[0] or image_hw[1] % patch_hw[1]:
+            raise ValueError(
+                f"img_size={image_hw} must be divisible by patch_size={patch_hw}"
+            )
+        grid_size = (image_hw[0] // patch_hw[0], image_hw[1] // patch_hw[1])
+        self.blocks = nn.Sequential(*[
+            Pfeiffer_Block(
+                adapter_config=adapter_cfg,
+                dim=embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias,
+                drop=drop_rate,
+                attn_drop=attn_drop_rate,
+                drop_path=dpr[i],
+                norm_layer=norm_layer,
+                act_layer=act_layer,
+                grid_size=grid_size,
+            ) for i in range(depth)
+        ])
 
 
 

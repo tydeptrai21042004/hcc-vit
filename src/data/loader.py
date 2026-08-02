@@ -6,6 +6,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import RandomSampler
 
 from ..utils import logging
+from ..utils.reproducibility import make_generator, seed_worker
 from .datasets.json_dataset import (
     CUB200Dataset, CarsDataset, DogsDataset, FlowersDataset, NabirdsDataset
 )
@@ -35,9 +36,17 @@ def _construct_loader(cfg, split, batch_size, shuffle, drop_last):
         ), "Dataset '{}' not supported".format(dataset_name)
         dataset = _DATASET_CATALOG[dataset_name](cfg, split)
 
-    # Create a sampler for multi-process training
-    sampler = DistributedSampler(dataset) if cfg.NUM_GPUS > 1 else None
-    # Create a loader
+    # Create a sampler for multi-process training.  The seed is explicit so
+    # seeds 0, 1, and 2 generate reproducible but distinct sample orders.
+    seed = 0 if cfg.SEED is None else int(cfg.SEED)
+    if cfg.NUM_GPUS > 1:
+        try:
+            sampler = DistributedSampler(dataset, seed=seed, shuffle=shuffle)
+        except TypeError:  # compatibility with older PyTorch
+            sampler = DistributedSampler(dataset, shuffle=shuffle)
+    else:
+        sampler = None
+
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
@@ -46,6 +55,8 @@ def _construct_loader(cfg, split, batch_size, shuffle, drop_last):
         num_workers=cfg.DATA.NUM_WORKERS,
         pin_memory=cfg.DATA.PIN_MEMORY,
         drop_last=drop_last,
+        worker_init_fn=seed_worker,
+        generator=make_generator(seed),
     )
     return loader
 

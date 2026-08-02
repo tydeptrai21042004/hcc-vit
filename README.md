@@ -155,3 +155,7 @@ If you find our work helpful in your research, please cite it as:
 ## License
 
 The majority of VPT is licensed under the CC-BY-NC 4.0 license (see [LICENSE](https://github.com/KMnP/vpt/blob/main/LICENSE) for details). Portions of the project are available under separate license terms: GitHub - [google-research/task_adaptation](https://github.com/google-research/task_adaptation) and [huggingface/transformers](https://github.com/huggingface/transformers) are licensed under the Apache 2.0 license; [Swin-Transformer](https://github.com/microsoft/Swin-Transformer), [ConvNeXt](https://github.com/facebookresearch/ConvNeXt) and [ViT-pytorch](https://github.com/jeonsworld/ViT-pytorch) are licensed under the MIT license; and [MoCo-v3](https://github.com/facebookresearch/moco-v3) and [MAE](https://github.com/facebookresearch/mae) are licensed under the Attribution-NonCommercial 4.0 International license.
+
+## HOSQ-DT1D adapter
+
+The repository now includes HOSQ-DT1D for supervised ViT, MAE, and MoCo adapter paths, together with deterministic three-seed execution, best-validation checkpoint selection, and test-once evaluation. See [`HOSQ_DT1D_INTEGRATION.md`](HOSQ_DT1D_INTEGRATION.md) and `configs/finetune/flowers_hosq_adapter.yaml`.

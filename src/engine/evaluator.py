@@ -55,9 +55,8 @@ class Evaluator():
                 "When evaluating classification, need at least give targets")
 
         if multilabel:
-            self._eval_multilabel(probs, targets, test_data)
-        else:
-            self._eval_singlelabel(probs, targets, test_data)
+            return self._eval_multilabel(probs, targets, test_data)
+        return self._eval_singlelabel(probs, targets, test_data)
 
     def _eval_singlelabel(
         self,
@@ -79,6 +78,7 @@ class Evaluator():
         save_results = acc_dict
 
         self.log_and_update(log_results, save_results, eval_type)
+        return save_results
 
     def _eval_multilabel(
         self,
@@ -102,6 +102,7 @@ class Evaluator():
             "ap": ap, "ar": ar, "mAP": mAP, "mAR": mAR, "f1": f1_dict
         }
         self.log_and_update(log_results, save_results, eval_type)
+        return save_results
 
     def log_and_update(self, log_results, save_results, eval_type):
         log_str = ""

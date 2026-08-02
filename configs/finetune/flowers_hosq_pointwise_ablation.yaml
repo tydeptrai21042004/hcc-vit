@@ -1,0 +1,7 @@
+_BASE_: flowers_hosq_adapter.yaml
+
+MODEL:
+  ADAPTER:
+    NAME: "HOSQ"
+    HOSQ:
+      NO_PW: False
